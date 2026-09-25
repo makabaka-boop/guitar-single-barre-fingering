@@ -2,7 +2,7 @@
  * 指板 SVG 渲染与点击编辑。
  * 布局：弦纵向延伸（x 轴按弦分列，低音弦在左），品位沿 y 轴向下。
  */
-import { midiName, pcOfMidi, pcName } from './search';
+import { midiName, pcOfMidi, pcName, type Barre } from './search';
 
 export interface FretboardOptions {
   tuning: number[];
@@ -14,6 +14,8 @@ export interface FretboardOptions {
   /** 是否可点击编辑（自定义形状模式）。 */
   editable: boolean;
   preferFlat: boolean;
+  /** 该形状最优指法的横按结论；提供时绘制横按标记（与搜索/评估共用同一结论）。 */
+  barre?: Barre | null;
   onToggle?: (stringIndex: number, fret: number) => void;
 }
 
@@ -32,7 +34,7 @@ function el<K extends keyof SVGElementTagNameMap>(
 
 export function renderFretboard(container: HTMLElement, opts: FretboardOptions): void {
   container.replaceChildren();
-  const { tuning, maxFret, shape, targetPcs, editable, preferFlat, onToggle } = opts;
+  const { tuning, maxFret, shape, targetPcs, editable, preferFlat, barre, onToggle } = opts;
   const n = tuning.length;
 
   const width = MARGIN.left + MARGIN.right + (n - 1) * FRET_W;
@@ -129,6 +131,20 @@ export function renderFretboard(container: HTMLElement, opts: FretboardOptions):
         }),
       );
     }
+  }
+
+  // ---- 横按标记：一条覆盖 [from, to] 弦列的圆角横杠（画在按弦圆点之下） ----
+  if (barre) {
+    svg.appendChild(
+      el('rect', {
+        class: 'fb-barre',
+        x: colX(barre.from) - 13,
+        y: markerY(barre.fret) - 13,
+        width: (barre.to - barre.from) * FRET_W + 26,
+        height: 26,
+        rx: 13,
+      }),
+    );
   }
 
   // ---- 当前形状的手指/开放/闷音标记 ----

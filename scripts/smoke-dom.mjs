@@ -67,6 +67,40 @@ assert(doc.querySelector('.eval-title').textContent.includes('#3'), '评估更�
 const excCounts = [...doc.querySelectorAll('.exc-row .exc-count')].map((e) => e.textContent);
 assert(excCounts.length === 5, `5 类排除原因（${excCounts.join(' / ')}）`);
 
+// 6.5 单横按模式：开关 -> 横按标注、SVG 横按标记、评估与排除文案共用同一结论
+const clickQualityMajor = () =>
+  [...doc.querySelectorAll('button')].find((b) => b.textContent === '大三').click();
+assert(doc.querySelector('.fb-barre') === null, '默认模式无横按标记');
+assert(doc.querySelector('#barre-toggle') !== null, '存在单横按模式开关');
+// 切到 F 大三（根音 F + 大三）：横按形状才进入前 20
+const rootSel = doc.querySelectorAll('select')[2];
+rootSel.value = '5';
+rootSel.dispatchEvent(new dom.window.Event('change'));
+clickQualityMajor();
+const barreCb = doc.querySelector('#barre-toggle');
+barreCb.checked = true;
+barreCb.dispatchEvent(new dom.window.Event('change'));
+const excNames = [...doc.querySelectorAll('.exc-row span:first-child')].map((e) => e.textContent);
+assert(excNames.some((t) => t.includes('最优指法')), '横按模式排除原因文案切换');
+const barreItem = [...doc.querySelectorAll('.result-item')].find((it) =>
+  it.querySelector('.result-meta').textContent.includes('横'),
+);
+assert(barreItem !== undefined, '结果列表出现带横按标注的项');
+barreItem.click();
+assert(doc.querySelector('.fb-barre') !== null, '选中横按结果后指板显示横按标记');
+assert(doc.querySelector('.eval-box').textContent.includes('横按'), '评估框说明横按指法');
+// 关闭横按模式并恢复 E 大三，供后续步骤使用
+const barreCb2 = doc.querySelector('#barre-toggle');
+barreCb2.checked = false;
+barreCb2.dispatchEvent(new dom.window.Event('change'));
+assert(doc.querySelector('.fb-barre') === null, '关闭横按模式后无横按标记');
+const rootSel2 = doc.querySelectorAll('select')[2];
+rootSel2.value = '4';
+rootSel2.dispatchEvent(new dom.window.Event('change'));
+clickQualityMajor();
+const onPcs2 = [...doc.querySelectorAll('.pc-btn.on')].map((b) => b.textContent);
+assert(JSON.stringify(onPcs2) === JSON.stringify(['E', 'G#', 'B']), '恢复 E 大三目标音级');
+
 // 7. 自定义模式：进入后点击指板格子（按第 2 根弦第 3 品）
 [...doc.querySelectorAll('.tabs button')].find((b) => b.textContent.includes('自定义')).click();
 // 重渲染后指板节点会被替换，需重新查询

@@ -338,6 +338,11 @@ button.ghost:hover {
   fill: var(--accent);
 }
 
+.fb-barre {
+  fill: var(--accent);
+  opacity: 0.72;
+}
+
 .fb-marker.open {
   fill: #cfe0f2;
 }

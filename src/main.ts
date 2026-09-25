@@ -2,17 +2,19 @@ import './style.css';
 import { renderFretboard } from './fretboard';
 import {
   EXCLUSION_REASONS,
-  REASON_DESCRIPTIONS,
-  REASON_LABELS,
+  bestFingering,
   evaluateShape,
   midiName,
   pcName,
   pcOfMidi,
+  reasonDescription,
+  reasonLabel,
   searchChords,
   validateInput,
   type ChordResult,
   type SearchOutput,
   type Shape,
+  type ShapeEvaluation,
 } from './search';
 
 /* ---------------------------------- 状态 ---------------------------------- */
@@ -52,6 +54,7 @@ const state = {
   targets: new Set<number>([4, 8, 11]), // E 大三
   maxFret: 5,
   preferFlat: false,
+  allowBarre: false,
   rootPc: 4,
   output: null as SearchOutput | null,
   selected: 0,
@@ -239,14 +242,34 @@ function buildControls(): void {
   });
   flatLabel.append(flatCb, document.createTextNode('优先显示降号音名'));
   fretRow.appendChild(flatLabel);
+
+  const barreLabel = document.createElement('label');
+  barreLabel.style.display = 'flex';
+  barreLabel.style.alignItems = 'center';
+  barreLabel.style.gap = '5px';
+  barreLabel.style.color = 'var(--muted)';
+  barreLabel.style.fontSize = '12px';
+  const barreCb = document.createElement('input');
+  barreCb.type = 'checkbox';
+  barreCb.id = 'barre-toggle';
+  barreCb.checked = state.allowBarre;
+  barreCb.addEventListener('change', () => {
+    state.allowBarre = barreCb.checked;
+    buildControls();
+    run();
+  });
+  barreLabel.append(barreCb, document.createTextNode('单横按指法模式'));
+  fretRow.appendChild(barreLabel);
   fretField.appendChild(fretRow);
   left.appendChild(fretField);
 
   // 约束说明
   const rules = div('help');
-  rules.innerHTML =
-    '固定约束：弹响 ≥ 3 根 · 按弦 ≤ 4 指（不计横按）· ' +
-    '非零品位跨度 ≤ 4（无按弦算 0）· 每弦闷音 x 或 0–最大品';
+  rules.innerHTML = state.allowBarre
+    ? '固定约束：弹响 ≥ 3 根 · 最优指法 ≤ 4 指（一枚横按算 1 指，覆盖一段相邻琴弦）· ' +
+      '非零品位跨度 ≤ 4（无按弦算 0）· 每弦闷音 x 或 0–最大品'
+    : '固定约束：弹响 ≥ 3 根 · 按弦 ≤ 4 指（不计横按）· ' +
+      '非零品位跨度 ≤ 4（无按弦算 0）· 每弦闷音 x 或 0–最大品';
   left.appendChild(rules);
 }
 
@@ -283,6 +306,7 @@ function run(): void {
       tuning: state.tuning,
       targets: [...state.targets],
       maxFret: state.maxFret,
+      allowBarre: state.allowBarre,
     });
     state.selected = Math.min(state.selected, Math.max(0, state.output.results.length - 1));
   }
@@ -350,12 +374,17 @@ function renderFretboardPanel(): HTMLElement {
         targetPcs: [...state.targets],
         editable: false,
         preferFlat: state.preferFlat,
+        barre: r.barre ?? null,
       });
       panel.appendChild(renderEvalOk(r));
     } else {
       renderEmptyBoard(board);
     }
   } else {
+    // 自定义形状与评估共用同一次指法结论（含横按）
+    const ev = evaluateShape(state.custom, state.tuning, [...state.targets], {
+      allowBarre: state.allowBarre,
+    });
     renderFretboard(board, {
       tuning: state.tuning,
       maxFret: state.maxFret,
@@ -363,6 +392,7 @@ function renderFretboardPanel(): HTMLElement {
       targetPcs: [...state.targets],
       editable: true,
       preferFlat: state.preferFlat,
+      barre: ev.barre ?? null,
       onToggle: (s, fret) => {
         const cur = state.custom[s];
         if (fret === 0) {
@@ -375,7 +405,7 @@ function renderFretboardPanel(): HTMLElement {
         renderRight();
       },
     });
-    panel.appendChild(renderEvalCustom());
+    panel.appendChild(renderEvalCustom(ev));
     const help = div('help');
     help.textContent = '点击格子按下/取消该品；点击琴枕上方区域在开放 0 与闷音 x 之间切换。';
     panel.appendChild(help);
@@ -399,6 +429,13 @@ function statsLine(r: { span: number; fretSum: number; fingers: number; ringing:
   return `跨度 ${r.span} · 品位总和 ${r.fretSum} · 手指 ${r.fingers} · 响弦 ${r.ringing}`;
 }
 
+/** 横按结论的一行描述（仅横按模式下调用）。 */
+function barreLine(barre: { fret: number; from: number; to: number } | null, fingers: number): string {
+  return barre
+    ? `指法：${barre.fret} 品单指横按弦 ${barre.from + 1}–${barre.to + 1}，共 ${fingers} 指`
+    : `指法：无需横按，共 ${fingers} 指`;
+}
+
 function renderEvalOk(r: ChordResult): HTMLElement {
   const box = div('eval-box ok');
   const title = div('eval-title');
@@ -408,20 +445,24 @@ function renderEvalOk(r: ChordResult): HTMLElement {
   const notes = r.midi
     .map((m) => (m === null ? 'x' : midiName(m, state.preferFlat)))
     .join('  ');
-  detail.innerHTML = `低音 → 高音：<b>${notes}</b><br/>排序键：(跨度 ${r.span}, 总和 ${r.fretSum}, 形状向量 [${r.shape
-    .map((f) => (f === -1 ? 'x' : f))
-    .join(',')}])，闷音 x 在字典序中排在所有品位之后`;
+  const lines = [
+    `低音 → 高音：<b>${notes}</b>`,
+    `排序键：(跨度 ${r.span}, 总和 ${r.fretSum}, 形状向量 [${r.shape
+      .map((f) => (f === -1 ? 'x' : f))
+      .join(',')}])，闷音 x 在字典序中排在所有品位之后`,
+  ];
+  if (state.allowBarre) lines.push(barreLine(r.barre ?? null, r.fingers));
+  detail.innerHTML = lines.join('<br/>');
   box.appendChild(detail);
   return box;
 }
 
-function renderEvalCustom(): HTMLElement {
-  const ev = evaluateShape(state.custom, state.tuning, [...state.targets]);
+function renderEvalCustom(ev: ShapeEvaluation): HTMLElement {
   const box = div('eval-box ' + (ev.valid ? 'ok' : 'bad'));
   const title = div('eval-title');
   title.textContent = ev.valid
     ? `✓ 该形状合法（${statsLine(ev)}）`
-    : `✗ 被排除：${ev.reason ? REASON_LABELS[ev.reason] : ''}`;
+    : `✗ 被排除：${ev.reason ? reasonLabel(ev.reason, state.allowBarre) : ''}`;
   box.appendChild(title);
   const detail = div('eval-detail');
   const lines: string[] = [];
@@ -432,6 +473,7 @@ function renderEvalCustom(): HTMLElement {
     .join('  ');
   lines.push(`低音 → 高音：${notes}`);
 
+  if (state.allowBarre) lines.push(barreLine(ev.barre ?? null, ev.fingers));
   if (ev.outsidePcs.length > 0) {
     lines.push(
       `出现目标外音级：${ev.outsidePcs.map((p) => pcName(p, state.preferFlat)).join('、')}`,
@@ -442,8 +484,12 @@ function renderEvalCustom(): HTMLElement {
       `尚缺目标音级：${ev.missingPcs.map((p) => pcName(p, state.preferFlat)).join('、')}`,
     );
   }
-  if (ev.reason) lines.push(REASON_DESCRIPTIONS[ev.reason]);
-  lines.push('判定按 响弦 → 目标外音 → 覆盖 → 手指数 → 跨度 顺序，只报告命中的第一条。');
+  if (ev.reason) lines.push(reasonDescription(ev.reason, state.allowBarre));
+  lines.push(
+    state.allowBarre
+      ? '判定按 响弦 → 目标外音 → 覆盖 → 跨度 → 最优指法手指数 顺序，只报告命中的第一条。'
+      : '判定按 响弦 → 目标外音 → 覆盖 → 手指数 → 跨度 顺序，只报告命中的第一条。',
+  );
   detail.innerHTML = lines.join('<br/>');
   box.appendChild(detail);
   return box;
@@ -490,7 +536,9 @@ function renderResultsPanel(): void {
     });
     const meta = document.createElement('span');
     meta.className = 'result-meta';
-    meta.textContent = `跨${r.span} Σ${r.fretSum} 指${r.fingers} 响${r.ringing}`;
+    meta.textContent =
+      `跨${r.span} Σ${r.fretSum} 指${r.fingers} 响${r.ringing}` +
+      (r.barre ? ` 横${r.barre.fret}品` : '');
     item.append(rank, chips, meta);
     item.addEventListener('click', () => {
       state.selected = i;
@@ -511,13 +559,13 @@ function renderExclusionsPanel(): void {
   for (const reason of EXCLUSION_REASONS) {
     const row = div('exc-row');
     const name = document.createElement('span');
-    name.textContent = REASON_LABELS[reason];
+    name.textContent = reasonLabel(reason, state.allowBarre);
     const count = document.createElement('span');
     count.className = 'exc-count';
     count.textContent = `${state.output.excluded[reason].toLocaleString()} 个`;
     const desc = document.createElement('span');
     desc.className = 'exc-desc';
-    desc.textContent = REASON_DESCRIPTIONS[reason];
+    desc.textContent = reasonDescription(reason, state.allowBarre);
     row.append(name, count, desc);
     panel.appendChild(row);
   }
@@ -532,7 +580,12 @@ run();
 // 供控制台手工探索
 declare global {
   interface Window {
-    __fret: { searchChords: typeof searchChords; evaluateShape: typeof evaluateShape; pcOfMidi: typeof pcOfMidi };
+    __fret: {
+      searchChords: typeof searchChords;
+      evaluateShape: typeof evaluateShape;
+      bestFingering: typeof bestFingering;
+      pcOfMidi: typeof pcOfMidi;
+    };
   }
 }
-window.__fret = { searchChords, evaluateShape, pcOfMidi };
+window.__fret = { searchChords, evaluateShape, bestFingering, pcOfMidi };
