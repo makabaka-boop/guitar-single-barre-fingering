@@ -7,6 +7,10 @@
  * 筛出可弹奏且音级集合恰好合法的方案，并按
  *   跨度 -> 品位总和 -> 形状向量字典序（闷音排在品位之后）
  * 排序，只保留前 20 个。
+ *
+ * 可选的「单横按指法」模式（默认关闭）：开启后手指数不再简单等于
+ * 非零品位弦数，而是对每个形状枚举「零次或一次横按」的全部指法，
+ * 取所需手指数最少者（见 bestFingering）；排序键与排除原因优先级不变。
  */
 
 /** 一根弦的取值：-1 表示闷音(x)，0..maxFret 表示该弦所按品位。 */
@@ -14,6 +18,84 @@ export type Fret = number;
 
 /** 一个和弦形状：与开放弦数组等长、自低音弦向高音弦排列的品位向量。 */
 export type Shape = Fret[];
+
+/** 一次横按：一根手指在 fret 品横压相邻的一段琴弦 [from, to]（含端点）。 */
+export interface BarreInfo {
+  /** 横按的正品位（>0）。 */
+  fret: number;
+  /** 覆盖的第一根弦下标（低音侧）。 */
+  from: number;
+  /** 覆盖的最后一根弦下标（含，高音侧），from < to。 */
+  to: number;
+}
+
+/** 一个指法结论：所需手指数与可选的一次横按。 */
+export interface Fingering {
+  /** 所需手指数（横按整体算一根手指）。 */
+  fingers: number;
+  /** 横按信息；无横按指法为 null。 */
+  barre: BarreInfo | null;
+}
+
+/**
+ * 指法优劣比较（返回负数表示 a 更优）：
+ *   1. 所需手指数少者优；
+ *   2. 并列时无横按优先；
+ *   3. 再并列按 (横按品位, 起始弦下标, 终止弦下标) 升序。
+ */
+export function compareFingering(a: Fingering, b: Fingering): number {
+  if (a.fingers !== b.fingers) return a.fingers - b.fingers;
+  if (a.barre === null || b.barre === null) {
+    if (a.barre === null && b.barre === null) return 0;
+    return a.barre === null ? -1 : 1;
+  }
+  if (a.barre.fret !== b.barre.fret) return a.barre.fret - b.barre.fret;
+  if (a.barre.from !== b.barre.from) return a.barre.from - b.barre.from;
+  return a.barre.to - b.barre.to;
+}
+
+/**
+ * 单横按最优指法：对形状枚举「零次或一次横按」的全部指法，按 compareFingering 取最优。
+ *
+ * 横按规则：
+ *  - 横按占一根手指，覆盖一段相邻琴弦 [from, to]；
+ *  - 区间内至少两根弦的最终品位恰好等于横按品位 b；
+ *  - 区间内不得有闷音(-1)、空弦(0) 或低于 b 的品位（这些取值都阻断区间）；
+ *  - 区间内高于 b 的弦与区间外的非零品位弦仍各需一根手指。
+ *
+ * 对横按 (b, [from, to])：手指数 = 1（横按）+ 未被横按盖住的非零品位弦数
+ * = 1 + 全部按弦数 - 区间内恰为 b 品的弦数。
+ */
+export function bestFingering(shape: Shape): Fingering {
+  const n = shape.length;
+  let pressed = 0;
+  const barreFrets = new Set<number>();
+  for (const f of shape) {
+    if (f > 0) {
+      pressed++;
+      barreFrets.add(f);
+    }
+  }
+
+  // 零次横按：每根非零品位弦各占一指。
+  let best: Fingering = { fingers: pressed, barre: null };
+
+  // 横按品位只需考虑形状中实际出现的非零品位（否则凑不齐两根恰为该品位的弦）。
+  for (const b of [...barreFrets].sort((x, y) => x - y)) {
+    for (let from = 0; from + 1 < n; from++) {
+      if (shape[from] < b) continue; // 左端点已被闷音/空弦/更低品位阻断
+      for (let to = from + 1; to < n; to++) {
+        if (shape[to] < b) break; // 右端再延伸都会包含被阻断的弦
+        let exact = 0;
+        for (let s = from; s <= to; s++) if (shape[s] === b) exact++;
+        if (exact < 2) continue;
+        const cand: Fingering = { fingers: 1 + pressed - exact, barre: { fret: b, from, to } };
+        if (compareFingering(cand, best) < 0) best = cand;
+      }
+    }
+  }
+  return best;
+}
 
 /** 枚举失败时的排除原因（同一方案命中多条时，按枚举顺序只记第一条）。 */
 export type ExclusionReason =
@@ -40,12 +122,14 @@ export interface SearchInput {
   maxFret: number;
   /** 至少需要弹响的弦数，默认 3。 */
   minStrings?: number;
-  /** 最多可用手指数（按下的非零品位弦数，不计横按），默认 4。 */
+  /** 最多可用手指数，默认 4。默认模式按非零品位弦数计；横按模式按最优指法（含一次横按）计。 */
   maxFingers?: number;
   /** 允许的非零品位最大最小差，默认 4；没有按弦时跨度算 0。 */
   maxSpan?: number;
   /** 返回结果上限，默认 20。 */
   limit?: number;
+  /** 单横按指法模式：开启后按最优指法（零或一次横按）计手指数，默认关闭。 */
+  barre?: boolean;
 }
 
 export interface ChordResult {
@@ -55,12 +139,14 @@ export interface ChordResult {
   span: number;
   /** 品位总和（闷音与 0 品均按 0 计）。 */
   fretSum: number;
-  /** 按弦手指数（非零品位的弦数，不计横按）。 */
+  /** 手指数：默认模式为非零品位弦数；横按模式为最优指法（含横按）所需手指数。 */
   fingers: number;
   /** 弹响弦数。 */
   ringing: number;
   /** 各弹响弦实际发出的 MIDI 音高（闷音弦对应位置为 null）。 */
   midi: (number | null)[];
+  /** 横按模式下的最优横按（无横按指法更优时为 null）；仅横按模式开启时存在。 */
+  barre?: BarreInfo | null;
 }
 
 export interface SearchOutput {
@@ -209,6 +295,7 @@ export interface ShapeEvaluation {
   /** 第一条失败的规则；valid 时为 null。与 searchChords 的排除桶一一对应。 */
   reason: ExclusionReason | null;
   ringing: number;
+  /** 手指数：默认模式为非零品位弦数；横按模式为最优指法（含横按）所需手指数。 */
   fingers: number;
   span: number;
   fretSum: number;
@@ -221,6 +308,8 @@ export interface ShapeEvaluation {
   missingPcs: number[];
   /** 弹响但不属于目标的音级（去重）。 */
   outsidePcs: number[];
+  /** 横按模式下的最优横按；未开启横按模式或无横按指法更优时为 null。 */
+  barre: BarreInfo | null;
 }
 
 /** 与全枚举相同的规则与优先级，评估单个形状（供页面解释排除原因）。 */
@@ -228,7 +317,7 @@ export function evaluateShape(
   shape: Shape,
   tuning: number[],
   targets: number[],
-  opts: { minStrings?: number; maxFingers?: number; maxSpan?: number } = {},
+  opts: { minStrings?: number; maxFingers?: number; maxSpan?: number; barre?: boolean } = {},
 ): ShapeEvaluation {
   if (shape.length !== tuning.length) throw new Error('形状长度必须与弦数一致');
   const minStrings = opts.minStrings ?? 3;
@@ -244,9 +333,14 @@ export function evaluateShape(
   const missingPcs = targets.filter((t) => !presentPcs.includes(t));
 
   const pressed = shape.filter((f): f is number => f > 0);
-  const fingers = pressed.length;
-  const span = fingers === 0 ? 0 : Math.max(...pressed) - Math.min(...pressed);
+  const span = pressed.length === 0 ? 0 : Math.max(...pressed) - Math.min(...pressed);
   const fretSum = shape.reduce((a, f) => a + (f === -1 ? 0 : f), 0);
+
+  // 横按模式用最优指法计手指数，与 searchChords 共用同一结论。
+  const fingering: Fingering = opts.barre
+    ? bestFingering(shape)
+    : { fingers: pressed.length, barre: null };
+  const fingers = fingering.fingers;
 
   let reason: ExclusionReason | null = null;
   if (ringing < minStrings) reason = 'min_strings';
@@ -267,6 +361,7 @@ export function evaluateShape(
     presentPcs,
     missingPcs,
     outsidePcs,
+    barre: fingering.barre,
   };
 }
 
@@ -286,6 +381,13 @@ export const REASON_DESCRIPTIONS: Record<ExclusionReason, string> = {
   span: '非零品位的最大值减最小值不得超过 4；没有按弦时跨度为 0。',
 };
 
+/** 横按模式开启时的排除原因说明（仅 max_fingers 的手指数语义不同）。 */
+export const REASON_DESCRIPTIONS_BARRE: Record<ExclusionReason, string> = {
+  ...REASON_DESCRIPTIONS,
+  max_fingers:
+    '按最优指法计手指数：可横按一次（横按算一根手指，区间内更高的品位与区间外的非零品位另占手指），最多 4 根。',
+};
+
 /**
  * 全枚举搜索。n 根弦、每根 (maxFret+2) 种取值，
  * 6 弦 9 品时约 177 万个叶节点，单次亚秒级完成。
@@ -301,6 +403,7 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
   const maxFingers = rawInput.maxFingers ?? 4;
   const maxSpan = rawInput.maxSpan ?? 4;
   const limit = rawInput.limit ?? 20;
+  const barreMode = rawInput.barre === true;
 
   // 目标音级位图，便于子集判断。
   let targetMask = 0;
@@ -337,7 +440,7 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
         return;
       }
 
-      let fingers = 0;
+      let pressed = 0;
       let fretSum = 0;
       let minPressed = Number.POSITIVE_INFINITY;
       let maxPressed = -1;
@@ -346,7 +449,7 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
         const f = shape[i];
         if (f === -1) continue;
         if (f > 0) {
-          fingers++;
+          pressed++;
           if (f < minPressed) minPressed = f;
           if (f > maxPressed) maxPressed = f;
         }
@@ -354,18 +457,30 @@ export function searchChords(rawInput: SearchInput): SearchOutput {
         midi[i] = tuning[i] + f;
       }
 
+      // 横按模式：手指数取「零或一次横按」的最优指法，结论随结果一并返回。
+      let fingers = pressed;
+      let barre: BarreInfo | null = null;
+      if (barreMode) {
+        const fingering = bestFingering(shape);
+        fingers = fingering.fingers;
+        barre = fingering.barre;
+      }
+
       if (fingers > maxFingers) {
         excluded.max_fingers++;
         return;
       }
       // 无按弦时 minPressed 仍为 Infinity，跨度算 0。
-      const span = fingers === 0 ? 0 : maxPressed - minPressed;
+      const span = pressed === 0 ? 0 : maxPressed - minPressed;
       if (span > maxSpan) {
         excluded.span++;
         return;
       }
 
-      valid.push({ shape: shape.slice(), span, fretSum, fingers, ringing, midi });
+      const result: ChordResult = { shape: shape.slice(), span, fretSum, fingers, ringing, midi };
+      // 默认模式不挂 barre 字段，保证结果与开启前逐项一致。
+      if (barreMode) result.barre = barre;
+      valid.push(result);
       return;
     }
 

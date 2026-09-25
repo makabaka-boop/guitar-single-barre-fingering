@@ -67,6 +67,34 @@ assert(doc.querySelector('.eval-title').textContent.includes('#3'), '评估更�
 const excCounts = [...doc.querySelectorAll('.exc-row .exc-count')].map((e) => e.textContent);
 assert(excCounts.length === 5, `5 类排除原因（${excCounts.join(' / ')}）`);
 
+// 6.5 单横按指法模式：开关存在，开启后结果列表、横按标记与指法结论正常
+const barreLabel = [...doc.querySelectorAll('label')].find((l) => l.textContent.includes('单横按'));
+assert(barreLabel !== undefined, '存在单横按指法模式开关');
+barreLabel.querySelector('input').click();
+assert(items().length > 0 && items().length <= 20, `横按模式结果数量 1..20（${items().length}）`);
+assert(
+  [...doc.querySelectorAll('.result-meta')].some((m) => m.textContent.includes('横')),
+  '结果列表出现横按标记',
+);
+// 逐个点击结果，至少一个结果的指板预览画出横按区间
+const resultCount = items().length;
+let sawBarre = false;
+for (let i = 0; i < resultCount && !sawBarre; i++) {
+  items()[i].click();
+  sawBarre = doc.querySelector('.fretboard-wrap svg .fb-barre') !== null;
+}
+assert(sawBarre, '横按模式下指板 SVG 出现横按标记');
+assert(
+  doc.querySelector('.eval-detail').textContent.includes('最优指法'),
+  '评估框展示最优指法结论',
+);
+// 关闭横按模式后结果列表恢复
+[...doc.querySelectorAll('label')].find((l) => l.textContent.includes('单横按')).querySelector('input').click();
+assert(
+  ![...doc.querySelectorAll('.result-meta')].some((m) => m.textContent.includes('横')),
+  '关闭横按模式后结果恢复无横按标记',
+);
+
 // 7. 自定义模式：进入后点击指板格子（按第 2 根弦第 3 品）
 [...doc.querySelectorAll('.tabs button')].find((b) => b.textContent.includes('自定义')).click();
 // 重渲染后指板节点会被替换，需重新查询
